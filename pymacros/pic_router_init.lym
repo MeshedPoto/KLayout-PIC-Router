@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<klayout-macro>
+ <description>KLayout-PIC Router Initialization</description>
+ <version>0.1.0</version>
+ <category>pymacros</category>
+ <prolog/>
+ <epilog/>
+ <doc>Registers the PIC_Router PCell library (EulerWaveguide, EulerBend, TOPICBend) in all modes, and initializes the PIC Tools menu, interactive canvas plugins (Snap, Route, Free Draw Waveguide, Align, Add Port), and dockable side panel when KLayout GUI is active.</doc>
+ <autorun>true</autorun>
+ <autorun-early>false</autorun-early>
+ <priority>0</priority>
+ <shortcut/>
+ <show-in-menu>false</show-in-menu>
+ <group-name/>
+ <menu-path/>
+ <interpreter>python</interpreter>
+ <dsl-interpreter-name/>
+ <text>import os
+import sys
+import traceback
+import pya
+
+
+def _ensure_pic_router_on_path():
+    candidates = []
+    if "__file__" in globals() and __file__:
+        here = os.path.dirname(os.path.abspath(__file__))
+        candidates.append(os.path.abspath(os.path.join(here, "..", "python")))
+    app = pya.Application.instance() if hasattr(pya, "Application") else None
+    if app is not None and hasattr(app, "application_data_path"):
+        try:
+            app_dir = app.application_data_path()
+            if app_dir:
+                candidates.append(os.path.join(app_dir, "salt", "pic_router", "python"))
+        except Exception:
+            pass
+    # Cross-platform fallbacks: Windows (~/KLayout) and Linux/macOS (~/.klayout)
+    candidates.append(os.path.join(os.path.expanduser("~"), "KLayout", "salt", "pic_router", "python"))
+    candidates.append(os.path.join(os.path.expanduser("~"), ".klayout", "salt", "pic_router", "python"))
+    for py_dir in candidates:
+        if os.path.isdir(os.path.join(py_dir, "pic_router")):
+            if py_dir in sys.path:
+                sys.path.remove(py_dir)
+            sys.path.insert(0, py_dir)
+            break
+
+
+def _bootstrap():
+    _ensure_pic_router_on_path()
+
+    # Always register PCell library (works in both GUI and headless -b batch mode).
+    from pic_router.pcells import register_pcell_library
+    register_pcell_library()
+
+    # Only attach menus, dock panel, and interactive PluginFactories when GUI exists.
+    app = pya.Application.instance() if hasattr(pya, "Application") else None
+    mw = app.main_window() if app is not None else None
+    if mw is not None:
+        from pic_router.gui import init_gui
+        init_gui()
+
+
+try:
+    _bootstrap()
+except Exception as exc:
+    print("[pic_router] Initialization error:", exc)
+    traceback.print_exc()
+</text>
+</klayout-macro>

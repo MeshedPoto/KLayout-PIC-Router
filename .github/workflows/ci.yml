@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install klayout and pytest
+        run: |
+          python -m pip install --upgrade pip
+          pip install klayout pytest
+
+      - name: Verify zero numpy/scipy imports in python/pic_router
+        run: |
+          python - <<'EOF'
+          import ast
+          from pathlib import Path
+
+          pkg_dir = Path("python/pic_router")
+          py_files = sorted(pkg_dir.glob("*.py"))
+          assert len(py_files) >= 8, f"Expected >= 8 modules in {pkg_dir}"
+          for pyf in py_files:
+              tree = ast.parse(pyf.read_text(encoding="utf-8"), filename=str(pyf))
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Import):
+                      for alias in node.names:
+                          root = alias.name.split(".")[0]
+                          assert root not in ("numpy", "scipy"), f"Forbidden import {alias.name} in {pyf}"
+                  elif isinstance(node, ast.ImportFrom) and node.module:
+                      root = node.module.split(".")[0]
+                      assert root not in ("numpy", "scipy"), f"Forbidden from-import {node.module} in {pyf}"
+          print(f"Verified zero numpy/scipy imports across {len(py_files)} modules.")
+          EOF
+
+      - name: Validate grain.xml and pic_router_init.lym XML
+        run: |
+          python - <<'EOF'
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          grain = ET.parse(Path("grain.xml")).getroot()
+          assert grain.tag == "salt-grain"
+          assert (grain.findtext("name") or "").strip() == "pic_router"
+          assert (grain.findtext("version") or "").strip() == "0.1.0"
+          assert (grain.findtext("author") or "").strip() == "MeshedPoto"
+          assert (grain.findtext("license") or "").strip() == "MIT"
+
+          lym = ET.parse(Path("pymacros/pic_router_init.lym")).getroot()
+          assert lym.tag == "klayout-macro"
+          assert (lym.findtext("text") or "").strip() != ""
+          print("grain.xml and pymacros/pic_router_init.lym validated cleanly.")
+          EOF
+
+      - name: Syntax-check Linux/macOS installer script
+        run: bash -n scripts/install_linux_mac.sh
+
+      - name: Run synthetic pytest test suite
+        run: |
+          pytest tests/test_euler_and_router.py tests/test_ports_and_snap.py tests/test_mask_ops.py -v
