@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <klayout-macro>
  <description>KLayout-PIC Router Initialization</description>
- <version>0.1.0</version>
+ <version>0.1.1</version>
  <category>pymacros</category>
  <prolog/>
  <epilog/>

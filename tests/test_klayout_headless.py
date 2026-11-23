@@ -76,7 +76,7 @@ def _check_grain_xml_and_installer() -> None:
     root = ET.parse(grain_path).getroot()
     assert root.tag == "salt-grain"
     assert (root.findtext("name") or "").strip() == "pic_router"
-    assert (root.findtext("version") or "").strip() == "0.1.0"
+    assert (root.findtext("version") or "").strip() == "0.1.1"
     assert (root.findtext("author") or "").strip() == "MeshedPoto"
     assert (root.findtext("license") or "").strip() == "MIT"
     assert (root.findtext("title") or "").strip() == "KLayout-PIC Router"
@@ -481,7 +481,7 @@ def _run_batch_phase() -> None:
     _pass("PIC_Router PCell library (EulerBend, EulerWaveguide, TOPICBend) + unique shortcuts")
 
     _check_grain_xml_and_installer()
-    _pass("grain.xml metadata (0.1.0, MeshedPoto, MIT) + bash -n install_linux_mac.sh")
+    _pass("grain.xml metadata (0.1.1, MeshedPoto, MIT) + bash -n install_linux_mac.sh")
 
     # Launch Phase 2 (offscreen Qt5/Qt6 GUI integration) in an isolated temp KLAYOUT_HOME
     klayout_bin = os.path.realpath(sys.executable)

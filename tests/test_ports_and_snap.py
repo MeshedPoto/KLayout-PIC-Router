@@ -558,3 +558,35 @@ def test_align_axis_center_pair_and_relative_grid():
     assert ax["residual_err_um"] < 0.002
     assert math.isclose(ax["new_port_pos"][0], dual_w2_b.x, abs_tol=2e-3)
     assert math.isclose(ax["new_port_pos"][1], y_before, abs_tol=1e-6)
+
+
+def test_auto_detect_ports_dense_spiral_polygon():
+    """Verify >2,000-vertex smooth spiral polygon rejects curved chords and detects only the 2 true ports."""
+    from pic_router.euler import extrude_centerline
+
+    ly = kdb.Layout()
+    ly.dbu = 0.001
+    cell = ly.create_cell("DENSE_SPIRAL")
+    li = ly.layer(1, 0)
+
+    # Build a smooth Archimedean spiral centerline with ~1,200 points (-> ~2,400 polygon vertices,
+    # chord lengths ~0.4..0.9 um right inside the [0.15, 5.0] um port-width window) + straight stubs.
+    pts: list[tuple[float, float]] = [(-20.0, 50.0), (0.0, 50.0)]
+    n_arc = 1200
+    th_max = 3.0 * math.pi  # 1.5 turns from theta = pi/2 to 7*pi/2
+    for k in range(1, n_arc + 1):
+        u = k / n_arc
+        th = 0.5 * math.pi - u * th_max
+        r = 50.0 + 30.0 * u  # r grows from 50 um to 80 um; at u=1, th = -2.5*pi -> (0, -80), tangent (-1, 0)
+        pts.append((r * math.cos(th), r * math.sin(th)))
+    pts.append((-20.0, -80.0))
+
+    poly_pts = extrude_centerline(pts, width=0.50)
+    assert len(poly_pts) > 2000
+    dpts = [kdb.DPoint(x, y) for x, y in poly_pts]
+    cell.shapes(li).insert(kdb.DPolygon(dpts))
+
+    detected = auto_detect_ports(ly, cell, core_layers=((1, 0),))
+    assert len(detected) == 2
+    coords = sorted((round(p.x, 2), round(p.y, 2), round(p.angle_deg, 1), round(p.width, 3)) for p in detected)
+    assert coords == [(-20.0, -80.0, 180.0, 0.5), (-20.0, 50.0, 180.0, 0.5)]

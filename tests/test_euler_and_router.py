@@ -125,7 +125,7 @@ def _discrete_curvature_profile(
 
 
 def test_neutral_builtin_presets():
-    assert __version__ == "0.1.0"
+    assert __version__ == "0.1.1"
     assert DEFAULT_PRESET_NAME == "Core + Trench (Rib)"
     assert set(CROSS_SECTION_PRESETS.keys()) == {
         "Core Only (Single Layer)",
@@ -864,3 +864,39 @@ def test_collision_free_route_length_annotations(style: str):
     assert card.startswith(hdr)
     extracted = _extract_existing_text_boxes(top, li, line_h=14.0)
     assert len(extracted) == len(texts)
+
+
+def test_steep_cross_chip_sbend_fallback_and_analytical_bisection():
+    """Verify steep cross-chip offsets fall back cleanly without vertex explosion and C2 bisection converges."""
+    from pic_router.ports import Port
+    from pic_router.router import tune_route_for_integer_length
+
+    # 1. Steep cross-chip facing ports (tiny forward lx, huge lateral |ly|) must reject degenerate S-bend
+    #    and fall back to 2-bend orthogonal routing with bounded centerline point count.
+    p_start = Port(name="o1", x=0.0, y=0.0, angle_deg=0.0, width=0.50, core_layer=(1, 0))
+    p_end_steep = Port(name="o2", x=60.0, y=-15000.0, angle_deg=180.0, width=0.50, core_layer=(1, 0))
+    for mode in ("sbend_bezier", "sbend_sine"):
+        res_steep = plan_route_ports(
+            p_start, p_end_steep, radius=30.0, euler_p=0.5, min_straight=5.0, route_mode=mode
+        )
+        assert res_steep.ok
+        assert len(res_steep.bends) >= 2
+        assert len(res_steep.centerline) < 2500
+
+    # 2. Direct sbend_points safety cap preserves exact endpoints
+    pts_capped = sbend_points(60.0, -5000.0, curve_type="sbend_bezier", max_points=513)
+    assert len(pts_capped) <= 513
+    assert math.hypot(pts_capped[0][0], pts_capped[0][1]) < 1e-9
+    assert math.hypot(pts_capped[-1][0] - 60.0, pts_capped[-1][1] - (-5000.0)) < 1e-9
+
+    # 3. Normal C2 S-bend integer-micron tuning via analytical quadrature bisection
+    p_end_gentle = Port(name="o2", x=240.0, y=42.3, angle_deg=180.0, width=0.50, core_layer=(1, 0))
+    res_c2 = plan_route_ports(
+        p_start, p_end_gentle, radius=30.0, euler_p=0.5, min_straight=15.0, route_mode="sbend_bezier"
+    )
+    assert res_c2.ok and len(res_c2.bends) == 1
+    tuned_c2, _, was_tuned = tune_route_for_integer_length(
+        res_c2, radius=30.0, euler_p=0.5, min_straight=5.0, step_um=1.0
+    )
+    assert was_tuned is True
+    assert abs(tuned_c2.total_length - round(tuned_c2.total_length)) < 2e-3

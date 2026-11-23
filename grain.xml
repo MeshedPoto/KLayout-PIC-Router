@@ -3,7 +3,7 @@
  <name>pic_router</name>
  <token/>
  <hidden>false</hidden>
- <version>0.1.0</version>
+ <version>0.1.1</version>
  <api-version>0.28</api-version>
  <title>KLayout-PIC Router</title>
  <doc>Interactive photonic integrated circuit (PIC) layout toolkit for KLayout 0.28–0.30+: PinRec port management and auto-detection, precision cell-to-cell snapping (including mirrored and arbitrary-angle ports), constant-width TOPIC (C3 Hermite), Euler (C2 clothoid), and C2 S-bend multi-layer waveguide routing, blank-canvas free-draw waveguides, single- and multi-layer trench generation, and length-preserving CD linewidth bias. Pure Python with zero third-party dependencies.</doc>

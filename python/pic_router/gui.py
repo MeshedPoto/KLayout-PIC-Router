@@ -353,7 +353,16 @@ def _find_nearest_port(
 ) -> tuple[Port | None, float]:
     best_port = None
     best_dist = float("inf")
+    limit = float(max_dist) if max_dist is not None else float("inf")
+    fx = float(x)
+    fy = float(y)
     for port in ports:
+        dx = port.x - fx
+        if dx > limit or dx < -limit:
+            continue
+        dy = port.y - fy
+        if dy > limit or dy < -limit:
+            continue
         if require_movable and port.inst_obj is None:
             continue
         if exclude_full_name is not None and port.full_name == exclude_full_name:
@@ -366,10 +375,12 @@ def _find_nearest_port(
                     continue
             except Exception:
                 pass
-        d = math.hypot(port.x - x, port.y - y)
+        d = math.hypot(dx, dy)
         if d < best_dist:
             best_dist = d
             best_port = port
+            if d < limit:
+                limit = d
     if best_port is None:
         return None, float("inf")
     if max_dist is not None and best_dist > max_dist:
@@ -437,10 +448,23 @@ class _MarkerBag:
             label = f"{port.full_name} ({port.width:.2f}um, {port.angle_deg:.1f}deg)"
             m_txt.set_text(pya.DText(label, pya.DTrans(p1.x, p1.y)))
 
-    def add_polyline(self, points: Sequence[tuple[float, float]], color: int, width: float = 0.0) -> None:
-        if len(points) < 2:
+    def add_polyline(
+        self,
+        points: Sequence[tuple[float, float]],
+        color: int,
+        width: float = 0.0,
+        max_points: int = 320,
+    ) -> None:
+        n = len(points)
+        if n < 2:
             return
-        dpts = [pya.DPoint(float(x), float(y)) for x, y in points]
+        if max_points >= 4 and n > max_points:
+            stride = max(1, (n - 1) // (max_points - 1))
+            sampled = [points[i] for i in range(0, n - 1, stride)]
+            sampled.append(points[-1])
+            dpts = [pya.DPoint(float(x), float(y)) for x, y in sampled]
+        else:
+            dpts = [pya.DPoint(float(x), float(y)) for x, y in points]
         m = self._new_marker(color, line_width=2, vertex_size=3)
         m.set_path(pya.DPath(dpts, float(width)))
 
@@ -2665,6 +2689,7 @@ class PICPortRoutePlugin(_PluginBase):
         self._hover_bag = _MarkerBag(view)
         self._sel_bag = _MarkerBag(view)
         self._preview_bag = _MarkerBag(view)
+        self._port_preview_cache: tuple[Any, Any] | None = None
 
     def _reload_ports(self) -> None:
         cv = self._view.active_cellview()
@@ -2679,6 +2704,7 @@ class PICPortRoutePlugin(_PluginBase):
         self._wp_meta.clear()
         self._typed_buf = ""
         self._forced_dir = None
+        self._port_preview_cache = None
         self._hover_bag.clear()
         self._sel_bag.clear()
         self._preview_bag.clear()
@@ -2974,58 +3000,85 @@ class PICPortRoutePlugin(_PluginBase):
                 if port is not None:
                     ew, lt2 = _compute_port_taper(port.width, cs.core_width, settings)
                     taper_len = max(0.0, float(settings.get("taper_length", 10.0)))
-                    res = plan_route_ports(
-                        self._start_port,
-                        port,
-                        radius=cs.radius,
-                        euler_p=cs.euler_p,
-                        min_straight=cs.min_straight,
-                        route_mode=settings["route_mode"],
-                        waypoints=list(self._waypoints) if self._waypoints else None,
-                        use_eff_radius=settings["use_eff_radius"],
-                        start_taper_len=lt1,
-                        end_taper_len=lt2,
-                        bend_type=btype,
+                    cache_key = (
+                        self._start_port.full_name,
+                        round(self._start_port.x, 4),
+                        round(self._start_port.y, 4),
+                        port.full_name,
+                        round(port.x, 4),
+                        round(port.y, 4),
+                        tuple(self._waypoints),
+                        round(cs.radius, 4),
+                        round(cs.euler_p, 4),
+                        round(cs.min_straight, 4),
+                        round(cs.core_width, 4),
+                        str(settings["route_mode"]),
+                        btype,
+                        bool(settings.get("integer_length", True)),
+                        bool(settings.get("use_eff_radius", True)),
+                        round(lt1, 4),
+                        round(lt2, 4),
                     )
-                    if not res.ok and self._waypoints and cs.min_straight > DEFAULT_SHIFT_STEP_UM:
-                        res_rel = plan_route_ports(
+                    if self._port_preview_cache is not None and self._port_preview_cache[0] == cache_key:
+                        res, res_disp = self._port_preview_cache[1]
+                    else:
+                        res = plan_route_ports(
                             self._start_port,
                             port,
                             radius=cs.radius,
                             euler_p=cs.euler_p,
-                            min_straight=DEFAULT_SHIFT_STEP_UM,
+                            min_straight=cs.min_straight,
                             route_mode=settings["route_mode"],
-                            waypoints=list(self._waypoints),
+                            waypoints=list(self._waypoints) if self._waypoints else None,
                             use_eff_radius=settings["use_eff_radius"],
                             start_taper_len=lt1,
                             end_taper_len=lt2,
                             bend_type=btype,
                         )
-                        if res_rel.ok:
-                            res = res_rel
-                    if res.ok and len(res.centerline) >= 2:
-                        if settings.get("integer_length", True) and not self._waypoints and res.bends:
-                            tuned_res, _, was_tuned = tune_route_for_integer_length(
-                                res,
+                        if not res.ok and self._waypoints and cs.min_straight > DEFAULT_SHIFT_STEP_UM:
+                            res_rel = plan_route_ports(
+                                self._start_port,
+                                port,
                                 radius=cs.radius,
                                 euler_p=cs.euler_p,
-                                min_straight=cs.min_straight,
+                                min_straight=DEFAULT_SHIFT_STEP_UM,
+                                route_mode=settings["route_mode"],
+                                waypoints=list(self._waypoints),
                                 use_eff_radius=settings["use_eff_radius"],
-                                step_um=1.0,
-                                dbu=0.001,
-                                min_stub_start=lt1,
-                                min_stub_end=lt2,
+                                start_taper_len=lt1,
+                                end_taper_len=lt2,
                                 bend_type=btype,
                             )
-                            if was_tuned:
-                                res = tuned_res
-                        res_disp = apply_taper_segments(
-                            res,
-                            core_width=cs.core_width,
-                            start_width=sw,
-                            end_width=ew,
-                            taper_length=taper_len,
-                        )
+                            if res_rel.ok:
+                                res = res_rel
+                        if res.ok and len(res.centerline) >= 2:
+                            if settings.get("integer_length", True) and not self._waypoints and res.bends:
+                                tuned_res, _, was_tuned = tune_route_for_integer_length(
+                                    res,
+                                    radius=cs.radius,
+                                    euler_p=cs.euler_p,
+                                    min_straight=cs.min_straight,
+                                    use_eff_radius=settings["use_eff_radius"],
+                                    step_um=1.0,
+                                    dbu=0.001,
+                                    min_stub_start=lt1,
+                                    min_stub_end=lt2,
+                                    bend_type=btype,
+                                )
+                                if was_tuned:
+                                    res = tuned_res
+                            res_disp = apply_taper_segments(
+                                res,
+                                core_width=cs.core_width,
+                                start_width=sw,
+                                end_width=ew,
+                                taper_length=taper_len,
+                            )
+                        else:
+                            res_disp = res
+                        self._port_preview_cache = (cache_key, (res, res_disp))
+
+                    if res.ok and len(res.centerline) >= 2:
                         prev_col = _COLOR_PREVIEW_ERR if res.warnings else _COLOR_PREVIEW_OK
                         self._preview_bag.add_polyline(
                             res.centerline, prev_col, width=cs.core_width
@@ -4958,6 +5011,8 @@ class PICRouterDock(_QDockWidgetBase):
         self._routes_cache: list[dict[str, Any]] = []
         self._route_selection_order: list[int] = []
         self._updating_preset = False
+        self._last_status_text: str | None = None
+        self._last_status_is_error: bool | None = None
         # Keep strong Python references to all Qt widgets/layouts created in _build_ui
         # so KLayout's Python/Qt bridge never destroys child widgets on local-var GC.
         self._ui_refs: list[Any] = []
@@ -5335,7 +5390,9 @@ class PICRouterDock(_QDockWidgetBase):
         if hdr is not None:
             hdr.setSectionResizeMode(0, pya.QHeaderView.Stretch)
             for col in range(1, 6):
-                hdr.setSectionResizeMode(col, pya.QHeaderView.ResizeToContents)
+                hdr.setSectionResizeMode(col, pya.QHeaderView.Interactive)
+        for col, col_w in ((1, 125), (2, 50), (3, 56), (4, 52), (5, 118)):
+            self.ports_table.setColumnWidth(col, col_w)
         self.ports_table.cellDoubleClicked.connect(self._on_table_double_click)
         self.ports_table.itemSelectionChanged.connect(lambda *_a: self._on_table_selection_changed())
         ports_layout.addWidget(self.ports_table)
@@ -5386,8 +5443,10 @@ class PICRouterDock(_QDockWidgetBase):
             rhdr = rhdr()
         if rhdr is not None:
             for col in range(3):
-                rhdr.setSectionResizeMode(col, pya.QHeaderView.ResizeToContents)
+                rhdr.setSectionResizeMode(col, pya.QHeaderView.Interactive)
             rhdr.setSectionResizeMode(3, pya.QHeaderView.Stretch)
+        for col, col_w in ((0, 42), (1, 78), (2, 86)):
+            self.routes_table.setColumnWidth(col, col_w)
         self.routes_table.cellDoubleClicked.connect(self._on_route_double_click)
         self.routes_table.itemSelectionChanged.connect(lambda *_a: self._on_route_selection_changed())
         routes_layout.addWidget(self.routes_table)
@@ -5639,18 +5698,25 @@ class PICRouterDock(_QDockWidgetBase):
             _, _, layout, top_cell = ctx
             self._routes_cache = _collect_euler_waveguide_routes(layout, top_cell)
             self._route_selection_order.clear()
-            self.routes_table.setRowCount(len(self._routes_cache))
-            for row, rec in enumerate(self._routes_cache):
-                vals = [
-                    f"#{rec['index']}",
-                    f"{rec['total_length']:.3f}",
-                    str(rec["radius_str"]),
-                    str(rec["segments_str"]),
-                ]
-                for col, val in enumerate(vals):
-                    item = pya.QTableWidgetItem(val)
-                    item.setToolTip(f"#{rec['index']} Total: {rec['total_length']:.3f} um | {rec['segments_str']}")
-                    self.routes_table.setItem(row, col, item)
+            self.routes_table.setUpdatesEnabled(False)
+            self.routes_table.blockSignals(True)
+            try:
+                self.routes_table.setRowCount(len(self._routes_cache))
+                for row, rec in enumerate(self._routes_cache):
+                    vals = [
+                        f"#{rec['index']}",
+                        f"{rec['total_length']:.3f}",
+                        str(rec["radius_str"]),
+                        str(rec["segments_str"]),
+                    ]
+                    tip = f"#{rec['index']} Total: {rec['total_length']:.3f} um | {rec['segments_str']}"
+                    for col, val in enumerate(vals):
+                        item = pya.QTableWidgetItem(val)
+                        item.setToolTip(tip)
+                        self.routes_table.setItem(row, col, item)
+            finally:
+                self.routes_table.blockSignals(False)
+                self.routes_table.setUpdatesEnabled(True)
             n = len(self._routes_cache)
             self.inspector_tabs.setTabText(1, f"Routes ({n})")
             if n == 0:
@@ -5745,17 +5811,23 @@ class PICRouterDock(_QDockWidgetBase):
             traceback.print_exc()
 
     def set_status(self, msg: str, is_error: bool = False) -> None:
-        self.status_label.setText(str(msg))
-        if is_error:
-            self.status_label.setStyleSheet(
-                "QLabel { background: #3b1818; color: #ffd0d0; padding: 6px; "
-                "border: 1px solid #a03030; border-radius: 3px; font-size: 11px; }"
-            )
-        else:
-            self.status_label.setStyleSheet(
-                "QLabel { background: #182b1e; color: #d8f5de; padding: 6px; "
-                "border: 1px solid #357048; border-radius: 3px; font-size: 11px; }"
-            )
+        txt = str(msg)
+        err = bool(is_error)
+        if txt != self._last_status_text:
+            self.status_label.setText(txt)
+            self._last_status_text = txt
+        if err != self._last_status_is_error:
+            self._last_status_is_error = err
+            if err:
+                self.status_label.setStyleSheet(
+                    "QLabel { background: #3b1818; color: #ffd0d0; padding: 6px; "
+                    "border: 1px solid #a03030; border-radius: 3px; font-size: 11px; }"
+                )
+            else:
+                self.status_label.setStyleSheet(
+                    "QLabel { background: #182b1e; color: #d8f5de; padding: 6px; "
+                    "border: 1px solid #357048; border-radius: 3px; font-size: 11px; }"
+                )
 
     def refresh_ports(self) -> None:
         try:
@@ -5785,18 +5857,24 @@ class PICRouterDock(_QDockWidgetBase):
             self._filtered_ports = out
 
         self._selection_order.clear()
-        self.ports_table.setRowCount(len(self._filtered_ports))
-        for row, p in enumerate(self._filtered_ports):
-            vals = [
-                p.full_name,
-                p.cell_name,
-                f"{p.core_layer[0]}/{p.core_layer[1]}",
-                f"{p.width:.3f}",
-                f"{p.angle_deg:.1f}",
-                f"({p.x:.2f}, {p.y:.2f})",
-            ]
-            for col, val in enumerate(vals):
-                self.ports_table.setItem(row, col, pya.QTableWidgetItem(val))
+        self.ports_table.setUpdatesEnabled(False)
+        self.ports_table.blockSignals(True)
+        try:
+            self.ports_table.setRowCount(len(self._filtered_ports))
+            for row, p in enumerate(self._filtered_ports):
+                vals = [
+                    p.full_name,
+                    p.cell_name,
+                    f"{p.core_layer[0]}/{p.core_layer[1]}",
+                    f"{p.width:.3f}",
+                    f"{p.angle_deg:.1f}",
+                    f"({p.x:.2f}, {p.y:.2f})",
+                ]
+                for col, val in enumerate(vals):
+                    self.ports_table.setItem(row, col, pya.QTableWidgetItem(val))
+        finally:
+            self.ports_table.blockSignals(False)
+            self.ports_table.setUpdatesEnabled(True)
 
     def _on_table_selection_changed(self) -> None:
         current_rows = sorted({item.row() for item in self.ports_table.selectedItems()})
