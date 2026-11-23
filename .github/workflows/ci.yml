@@ -58,7 +58,7 @@ jobs:
           grain = ET.parse(Path("grain.xml")).getroot()
           assert grain.tag == "salt-grain"
           assert (grain.findtext("name") or "").strip() == "pic_router"
-          assert (grain.findtext("version") or "").strip() == "0.1.0"
+          assert (grain.findtext("version") or "").strip() == "0.1.1"
           assert (grain.findtext("author") or "").strip() == "MeshedPoto"
           assert (grain.findtext("license") or "").strip() == "MIT"
 

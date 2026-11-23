@@ -710,7 +710,7 @@ def sbend_metrics(
     length: float,
     offset: float,
     curve_type: str = "sbend_bezier",
-    n_eval: int = 128,
+    n_eval: int = 64,
 ) -> dict[str, Any]:
     """Compute exact geometric metrics for a C2 zero-endpoint-curvature S-bend.
 
@@ -761,7 +761,7 @@ def sbend_metrics(
     l_total = 2.0 * half_arc
 
     # Peak curvature on [0, 0.5] (antisymmetric on [0.5, 1.0]) + golden-section refinement
-    n_half = max(32, int(n_eval) // 2)
+    n_half = max(16, int(n_eval) // 2)
     best_t = 0.25
     best_k = 0.0
     for i in range(n_half + 1):
@@ -775,7 +775,7 @@ def sbend_metrics(
     lo = max(0.0, best_t - step_t)
     hi = min(0.5, best_t + step_t)
     inv_phi = (math.sqrt(5.0) - 1.0) * 0.5
-    for _ in range(28):
+    for _ in range(20):
         m1 = hi - inv_phi * (hi - lo)
         m2 = lo + inv_phi * (hi - lo)
         k1 = abs(_sbend_curvature(m1, L, H, curve_type, bez_ab)[0])
@@ -813,6 +813,7 @@ def sbend_points(
     curve_type: str = "sbend_bezier",
     max_chord_err: float = 0.002,
     min_points: int = 49,
+    max_points: int = 2049,
 ) -> list[tuple[float, float]]:
     """Sample a C2 zero-endpoint-curvature S-bend centerline from (0, 0) to (length, offset)."""
     L = float(length)
@@ -825,6 +826,7 @@ def sbend_points(
     l_total = float(metrics["L_total"])
     max_chord_err = max(float(max_chord_err), 1e-6)
     min_points = max(int(min_points), 17)
+    max_seg = max(min_points - 1, int(max_points) - 1, 64)
 
     if math.isfinite(r_min) and r_min > 1e-6:
         ds_chord = math.sqrt(8.0 * r_min * max_chord_err)
@@ -832,7 +834,7 @@ def sbend_points(
     else:
         n_chord = min_points - 1
     # Keep even number of intervals so midpoint t=0.5 is sampled explicitly
-    n_seg = max(min_points - 1, n_chord, 32)
+    n_seg = min(max_seg, max(min_points - 1, n_chord, 32))
     if n_seg % 2 == 1:
         n_seg += 1
 
@@ -1289,10 +1291,10 @@ def build_multilayer_waveguide_regions(
         )
         max_extent = abs(spec.offset) + 0.5 * max(layer_widths)
 
-        # Use single smooth ribbon for narrow layers far from curvature center;
-        # use convex segment quads + outer wedges whenever width is significant
-        # relative to curvature radius or corners are sharp.
-        if max_extent < 0.35 * min_r and max_turn < math.radians(15.0):
+        # Use single smooth ribbon whenever inner offset stays clear of local curvature
+        # center (zero inner-loop self-intersection) and discrete steps are smooth;
+        # use convex segment quads + outer wedges whenever half-width approaches/exceeds R_min.
+        if max_extent < 0.80 * min_r and max_turn < math.radians(15.0):
             poly_pts = extrude_centerline(
                 points=clean_pts,
                 width=spec.width,

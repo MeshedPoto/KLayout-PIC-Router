@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![KLayout](https://img.shields.io/badge/KLayout-0.28%20--%200.30%2B-0F1C4D.svg)](https://www.klayout.de/)
 [![Pure Python](https://img.shields.io/badge/Pure%20Python-Zero%20Dependencies-059669.svg)](#安装方式)
-[![Version](https://img.shields.io/badge/Version-v0.1.0-1D4ED8.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-v0.1.1-1D4ED8.svg)](CHANGELOG.md)
 
 [English](README.md) | [简体中文](README_zh.md)
 
@@ -61,7 +61,7 @@
 
 ### Windows（一键安装）
 
-1. 下载并解压发布包 `KLayout-PIC-Router_v0.1.0.zip`（或克隆本仓库）。
+1. 下载并解压发布包 `KLayout-PIC-Router_v0.1.1.zip`（或克隆本仓库）。
 2. 双击运行 **`install_windows.bat`**（仓库内位于 `scripts\install_windows.bat`）。
    - 插件会自动安装到 `%USERPROFILE%\KLayout\salt\pic_router`（若设置了环境变量 `KLAYOUT_HOME`，则安装至其下 `salt\pic_router`）。
    - 如需卸载，执行：`scripts\install_windows.bat --uninstall`。

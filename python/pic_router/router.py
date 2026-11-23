@@ -673,6 +673,13 @@ def _plan_c2_sbend(
         else float(bend_metrics(90.0, radius, euler_p, True, bend_type=bend_type)["R_min"])
     )
 
+    # Reject geometrically degenerate cliff S-bends (e.g. tiny forward lx across chip-scale |ly|)
+    # where even zero-stub full-span curvature collapses far below physical bend radius, so
+    # callers cleanly fall back to 90-deg Bend + Straight routing.
+    m_full = sbend_metrics(lx, ly, curve_type=curve_type)
+    if abs(ly) > 4.0 * lx or float(m_full["R_min"]) < max(2.0, 0.12 * r_min_req):
+        return None
+
     # Prefer straight stubs of length `s` when they still meet r_min_req;
     # otherwise use full span (stub=0, still kappa=0 at both ends!) to maximize R_min.
     use_stub = 0.0
@@ -2657,7 +2664,7 @@ def tune_route_for_integer_length(
             else float(bend_metrics(90.0, r0, euler_p, True, bend_type=btype)["R_min"])
         )
 
-        def _eval_c2_extra(extra_stub: float) -> RouteResult | None:
+        def _build_c2_guides(extra_stub: float) -> list[tuple[float, float]] | None:
             s1_l = lt1 + extra_stub
             s2_l = lt2 + extra_stub
             if extra_stub < 0.0 or lx - s1_l - s2_l <= 1.0:
@@ -2676,44 +2683,98 @@ def tune_route_for_integer_length(
                 else:
                     w_g.append(pt)
             w_g.append(p3)
+            return w_g
+
+        def _eval_c2_metrics(extra_stub: float) -> tuple[float, float, list[tuple[float, float]]] | None:
+            """Fast analytical arc-length & R_min evaluation (zero polyline sampling during bisection)."""
+            w_g = _build_c2_guides(extra_stub)
+            if w_g is None:
+                return None
+            if len(w_g) == 2:
+                p_sb0, p_sb1 = w_g[0], w_g[1]
+                l_s1, l_s2 = 0.0, 0.0
+                th_u = th1
+            elif len(w_g) == 3:
+                pa, pm, pb = w_g
+                dhx, dhy = math.cos(th1), math.sin(th1)
+                v1x, v1y = pm[0] - pa[0], pm[1] - pa[1]
+                v2x, v2y = pb[0] - pm[0], pb[1] - pm[1]
+                d1_l = math.hypot(v1x, v1y)
+                d2_l = math.hypot(v2x, v2y)
+                perp1 = abs(v1x * dhy - v1y * dhx) if d1_l > 1e-6 else float("inf")
+                perp2 = abs(v2x * dhy - v2y * dhx) if d2_l > 1e-6 else float("inf")
+                if d1_l > 1e-6 and perp1 <= perp2 and perp1 < 1e-2 and (v1x * dhx + v1y * dhy) > 0.0:
+                    th_u = math.atan2(v1y, v1x)
+                    p_sb0, p_sb1 = pm, pb
+                    l_s1, l_s2 = d1_l, 0.0
+                elif d2_l > 1e-6 and perp2 < 1e-2 and (v2x * dhx + v2y * dhy) > 0.0:
+                    th_u = math.atan2(v2y, v2x)
+                    p_sb0, p_sb1 = pa, pm
+                    l_s1, l_s2 = 0.0, d2_l
+                else:
+                    return None
+            else:
+                pa, p1_q, p2_q, pb = w_g
+                v1x, v1y = p1_q[0] - pa[0], p1_q[1] - pa[1]
+                v2x, v2y = pb[0] - p2_q[0], pb[1] - p2_q[1]
+                l_s1 = math.hypot(v1x, v1y)
+                l_s2 = math.hypot(v2x, v2y)
+                th_u = math.atan2(v1y, v1x) if l_s1 > 1e-6 else (math.atan2(v2y, v2x) if l_s2 > 1e-6 else th1)
+                p_sb0, p_sb1 = p1_q, p2_q
+
+            dx_sb, dy_sb = _world_to_local(p_sb1[0], p_sb1[1], p_sb0[0], p_sb0[1], th_u)
+            if dx_sb <= 1e-4:
+                return None
+            if abs(dy_sb) < 1e-4:
+                return (math.hypot(p3[0] - p0[0], p3[1] - p0[1]), float("inf"), w_g)
+            m_sb = sbend_metrics(dx_sb, dy_sb, curve_type=ctype)
+            return (l_s1 + float(m_sb["L_total"]) + l_s2, float(m_sb["R_min"]), w_g)
+
+        def _finalize_c2(w_g: list[tuple[float, float]]) -> RouteResult | None:
             cand = route_sbend_from_guide_points(
                 w_g, curve_type=ctype, start_angle_deg=ang_deg, target_r_min=r_min_req
             )
             return cand if cand.ok else None
 
-        base_c2 = _eval_c2_extra(extra0)
-        if base_c2 is None:
+        base_m = _eval_c2_metrics(extra0)
+        if base_m is None:
             return (route_result, r0, False)
-        l0 = float(base_c2.total_length)
+        l0, base_rmin_raw, base_wg = base_m
         nearest = round(l0 / step) * step
         if abs(l0 - nearest) < 5e-4:
-            return (base_c2, r0, False)
+            fin0 = _finalize_c2(base_wg)
+            return (fin0 if fin0 is not None else route_result, r0, False)
 
-        base_rmin = float(base_c2.bends[0]["R_min"]) if base_c2.bends else r_min_req
+        base_rmin = base_rmin_raw if math.isfinite(base_rmin_raw) else r_min_req
         rmin_floor = min(base_rmin, r_min_req) * 0.80
 
         # Prefer decreasing extra_stub toward 0 (never encroaching into lt1/lt2!) to hit floor(L0)
         target_floor = math.floor(l0 / step) * step
         if extra0 > 1e-4 and target_floor >= step:
-            res_zero = _eval_c2_extra(0.0)
-            if res_zero is not None and res_zero.total_length <= target_floor + 5e-4:
+            m_zero = _eval_c2_metrics(0.0)
+            if m_zero is not None and m_zero[0] <= target_floor + 5e-4:
                 lo, hi = 0.0, extra0
-                best_c2 = res_zero
-                for _ in range(36):
+                best_m = m_zero
+                for _ in range(32):
                     mid = 0.5 * (lo + hi)
-                    cand = _eval_c2_extra(mid)
-                    if cand is None:
+                    cm = _eval_c2_metrics(mid)
+                    if cm is None:
                         hi = mid
                         continue
-                    best_c2 = cand
-                    if abs(cand.total_length - target_floor) < 5e-4:
-                        return (cand, r0, True)
-                    if cand.total_length < target_floor:
+                    best_m = cm
+                    if abs(cm[0] - target_floor) < 5e-4:
+                        fin = _finalize_c2(cm[2])
+                        if fin is not None:
+                            return (fin, r0, True)
+                        break
+                    if cm[0] < target_floor:
                         lo = mid
                     else:
                         hi = mid
-                if abs(best_c2.total_length - target_floor) < 2e-3:
-                    return (best_c2, r0, True)
+                if abs(best_m[0] - target_floor) < 2e-3:
+                    fin = _finalize_c2(best_m[2])
+                    if fin is not None:
+                        return (fin, r0, True)
 
         # Otherwise increase extra_stub slightly (shrinking span) to hit ceil(L0) while protecting R_min
         target_ceil = math.ceil(l0 / step) * step
@@ -2721,34 +2782,40 @@ def tune_route_for_integer_length(
         hi_extra = None
         for frac in (0.10, 0.25, 0.45, 0.70, 1.0):
             s_try = extra0 + frac * (max_extra_geom - extra0)
-            cand = _eval_c2_extra(s_try)
-            if cand is None or not cand.bends:
+            cm = _eval_c2_metrics(s_try)
+            if cm is None or not math.isfinite(cm[1]):
                 break
-            if float(cand.bends[0]["R_min"]) < rmin_floor:
+            if cm[1] < rmin_floor:
                 break
-            if cand.total_length >= target_ceil - 5e-4:
+            if cm[0] >= target_ceil - 5e-4:
                 hi_extra = s_try
                 break
         if hi_extra is not None:
             lo, hi = extra0, hi_extra
-            best_c2 = base_c2
-            for _ in range(36):
+            best_m = base_m
+            for _ in range(32):
                 mid = 0.5 * (lo + hi)
-                cand = _eval_c2_extra(mid)
-                if cand is None:
+                cm = _eval_c2_metrics(mid)
+                if cm is None:
                     hi = mid
                     continue
-                best_c2 = cand
-                if abs(cand.total_length - target_ceil) < 5e-4:
-                    return (cand, r0, True)
-                if cand.total_length < target_ceil:
+                best_m = cm
+                if abs(cm[0] - target_ceil) < 5e-4:
+                    fin = _finalize_c2(cm[2])
+                    if fin is not None:
+                        return (fin, r0, True)
+                    break
+                if cm[0] < target_ceil:
                     lo = mid
                 else:
                     hi = mid
-            if abs(best_c2.total_length - target_ceil) < 2e-3:
-                return (best_c2, r0, True)
+            if abs(best_m[0] - target_ceil) < 2e-3:
+                fin = _finalize_c2(best_m[2])
+                if fin is not None:
+                    return (fin, r0, True)
 
-        return (base_c2, r0, False)
+        fin_base = _finalize_c2(base_wg)
+        return (fin_base if fin_base is not None else route_result, r0, False)
 
     if len(q_guides) < 3:
         return (route_result, r0, False)

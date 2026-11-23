@@ -5,6 +5,18 @@ All notable changes to **KLayout-PIC Router** (`pic_router`) are documented in t
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-11-23
+
+### Fixed
+- **Eliminated Multi-Second UI Freezes on Chip-Scale Layouts (`PICRouterDock`)**:
+  - Replaced `QHeaderView.ResizeToContents` on `ports_table` and `routes_table` with `QHeaderView.Interactive` + explicit initial column widths, wrapped table repopulation in `setUpdatesEnabled(False)` / `blockSignals(True)`, and deduplicated `set_status()` text/stylesheet updates—eliminating $O(N^2)$ synchronous Qt font/layout recalculations during `Align X`, `Align Y`, `Center Pair (2->2)`, `Snap`, and port refreshes on multi-hundred-port chips (~600× faster dock refresh).
+- **Prevented Steep Cross-Chip S-Bend Vertex Explosion & Extrusion Stalls (`router.py`, `euler.py`, `gui.py`)**:
+  - Added aspect-ratio and minimum-radius guards in `_plan_c2_sbend` (`|ly| > 4 * lx` or `R_min < max(2.0, 0.12 * R_min_req)`) so degenerate cross-chip facing port pairs cleanly fall back to `90° Bend + Straight` routing instead of sampling hundreds of thousands of cliff S-bend vertices.
+  - Replaced repeated full-polyline S-bend generation inside `tune_route_for_integer_length` bisection with analytical Gauss–Legendre quadrature (`sbend_metrics`), sampling the centerline only once at convergence.
+  - Added a `max_points=2049` safety cap in `sbend_points`, relaxed the smooth single-ribbon fast path in `build_multilayer_waveguide_regions` to `max_extent < 0.80 * R_min` (avoiding thousands of per-segment `Region` unions on wide trenches), decimated canvas preview `DPath` markers to $\le 320$ points, and cached hovered target-port route previews in `PICPortRoutePlugin`.
+- **Accelerated `Auto-Detect / Refresh Ports` on Dense Multi-Turn Spiral Cells (`ports.py`)**:
+  - Added a 4-multiply integer dot-product corner-angle gate before floating-point square-root and collinear walks in `_detect_endcaps_in_regions` to immediately reject smooth curved/spiral chords, replaced `region.interacting(probe)` with clipped boolean `(region & probe)` to avoid copying 100k+ vertex polygons, and clipped heavy polygons (`n > 512`) to a local facet bounding box prior to inward strip verification (~9× faster on dense spiral subcells).
+
 ## [0.1.0] - 2026-11-21
 
 Initial public open-source release of **KLayout-PIC Router** for KLayout 0.28–0.30+.

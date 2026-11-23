@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![KLayout](https://img.shields.io/badge/KLayout-0.28%20--%200.30%2B-0F1C4D.svg)](https://www.klayout.de/)
 [![Pure Python](https://img.shields.io/badge/Pure%20Python-Zero%20Dependencies-059669.svg)](#installation)
-[![Version](https://img.shields.io/badge/Version-v0.1.0-1D4ED8.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-v0.1.1-1D4ED8.svg)](CHANGELOG.md)
 
 [English](README.md) | [简体中文](README_zh.md)
 
@@ -61,7 +61,7 @@ Constant-width **TOPIC** (*Transition-Optimal-Path Integrated Curve*) bends use 
 
 ### Option 1: Windows (1-Click Installer)
 
-1. Download and extract the release archive (`KLayout-PIC-Router_v0.1.0.zip`) or clone this repository.
+1. Download and extract the release archive (`KLayout-PIC-Router_v0.1.1.zip`) or clone this repository.
 2. Double-click **`install_windows.bat`** (or run `scripts\install_windows.bat` from the repository root).
    - Installs into `%USERPROFILE%\KLayout\salt\pic_router` (or `%KLAYOUT_HOME%\salt\pic_router` if `KLAYOUT_HOME` is set).
    - To uninstall later: `scripts\install_windows.bat --uninstall`.

@@ -668,15 +668,23 @@ def collect_world_ports(
 # ---------------------------------------------------------------------------
 
 def _region_contains_point_um(region: Any, x_um: float, y_um: float, dbu: float, kdb: Any) -> bool:
-    """Fast point-in-Region check using a 1-DBU probe box."""
+    """Fast point-in-Region check using C++ clipped box intersection (avoids copying large polygons)."""
     px = round(x_um / dbu)
     py = round(y_um / dbu)
     probe = kdb.Region(kdb.Box(px - 1, py - 1, px + 1, py + 1))
-    return not region.interacting(probe).is_empty()
+    return not (region & probe).is_empty()
 
 
 def _poly_contains_point_um(poly: Any, x_um: float, y_um: float, dbu: float, kdb: Any) -> bool:
     return bool(poly.inside(kdb.Point(round(x_um / dbu), round(y_um / dbu))))
+
+
+def _local_poly_contains_point_um(local_polys: Sequence[Any], x_um: float, y_um: float, dbu: float, kdb: Any) -> bool:
+    pt = kdb.Point(round(x_um / dbu), round(y_um / dbu))
+    for lp in local_polys:
+        if lp.inside(pt):
+            return True
+    return False
 
 
 def _collect_collinear_side(
@@ -741,6 +749,9 @@ def _detect_endcaps_in_regions(
     cos_perp = math.cos(math.radians(max_perp_err_deg))
     cos_side_div = math.cos(math.radians(max_side_div_deg))
     tan_side_tol = math.tan(math.radians(max_perp_err_deg + 1.0))
+    # Fast corner angle gate: smooth curve chords turn by ~0..15 deg (cos^2 > 0.9), whereas
+    # waveguide endcap corners turn by 90 +- max_perp_err_deg (cos^2 <= sin^2(max_perp_err_deg)).
+    cos_corner_gate2 = math.sin(math.radians(min(45.0, max_perp_err_deg + 8.0))) ** 2
 
     min_w_dbu = max(1, int(math.floor((min_width - 1e-6) / dbu)))
     max_w_dbu = int(math.ceil((max_width + 1e-6) / dbu))
@@ -770,6 +781,8 @@ def _detect_endcaps_in_regions(
             if area2 == 0:
                 continue
             orient = 1.0 if area2 > 0 else -1.0
+            is_heavy_poly = n > 512
+            poly_reg = kdb.Region(poly) if is_heavy_poly else None
 
             for i in range(n):
                 x0, y0 = pts[i]
@@ -784,6 +797,25 @@ def _detect_endcaps_in_regions(
                 d2 = dx * dx + dy * dy
                 if d2 < min_w_dbu2 or d2 > max_w_dbu2:
                     continue
+
+                # Reject smooth curve/spiral chords in 4 integer ops before sqrt/collinear walk:
+                # any adjacent segment >= 8 DBU must turn by ~90 deg, never nearly collinear.
+                xp0, yp0 = pts[i - 1]
+                dx_p = x0 - xp0
+                dy_p = y0 - yp0
+                d2_p = dx_p * dx_p + dy_p * dy_p
+                if d2_p >= 64:
+                    dot_p = dx_p * dx + dy_p * dy
+                    if dot_p * dot_p > cos_corner_gate2 * d2_p * d2:
+                        continue
+                xn1, yn1 = pts[j + 1 if j + 1 < n else 0]
+                dx_n = xn1 - x1
+                dy_n = yn1 - y1
+                d2_n = dx_n * dx_n + dy_n * dy_n
+                if d2_n >= 64:
+                    dot_n = dx_n * dx + dy_n * dy
+                    if dot_n * dot_n > cos_corner_gate2 * d2_n * d2:
+                        continue
 
                 L = math.sqrt(d2) * dbu
                 if L < min_width - 1e-6 or L > max_width + 1e-6:
@@ -827,28 +859,56 @@ def _detect_endcaps_in_regions(
 
                 if _region_contains_point_um(reg, p_out_x, p_out_y, dbu, kdb):
                     continue
-                if not _poly_contains_point_um(poly, p_in_x, p_in_y, dbu, kdb):
-                    continue
 
-                # Verify local waveguide strip width inward (rejects notches/staircases)
-                d_in = max(eps, min(0.10, 0.8 * min(L1, L2)))
-                cx = mx - d_in * nx
-                cy = my - d_in * ny
-                if not _poly_contains_point_um(poly, cx, cy, dbu, kdb):
-                    continue
-                inner_half = 0.30 * L
-                if not (
-                    _poly_contains_point_um(poly, cx + inner_half * tx, cy + inner_half * ty, dbu, kdb)
-                    and _poly_contains_point_um(poly, cx - inner_half * tx, cy - inner_half * ty, dbu, kdb)
-                ):
-                    continue
-
-                side_off = 0.5 * L + max(0.03, 0.08 * L + d_in * tan_side_tol)
-                if (
-                    _poly_contains_point_um(poly, cx + side_off * tx, cy + side_off * ty, dbu, kdb)
-                    or _poly_contains_point_um(poly, cx - side_off * tx, cy - side_off * ty, dbu, kdb)
-                ):
-                    continue
+                if is_heavy_poly:
+                    # Clip 100k+ vertex polygon once to a tiny local box around candidate facet
+                    pad_dbu = int(math.ceil((L + 1.0) / dbu))
+                    mx_i = round(mx / dbu)
+                    my_i = round(my / dbu)
+                    loc_clip = poly_reg & kdb.Region(
+                        kdb.Box(mx_i - pad_dbu, my_i - pad_dbu, mx_i + pad_dbu, my_i + pad_dbu)
+                    )
+                    loc_polys = list(loc_clip.each())
+                    if not _local_poly_contains_point_um(loc_polys, p_in_x, p_in_y, dbu, kdb):
+                        continue
+                    d_in = max(eps, min(0.10, 0.8 * min(L1, L2)))
+                    cx = mx - d_in * nx
+                    cy = my - d_in * ny
+                    if not _local_poly_contains_point_um(loc_polys, cx, cy, dbu, kdb):
+                        continue
+                    inner_half = 0.30 * L
+                    if not (
+                        _local_poly_contains_point_um(loc_polys, cx + inner_half * tx, cy + inner_half * ty, dbu, kdb)
+                        and _local_poly_contains_point_um(loc_polys, cx - inner_half * tx, cy - inner_half * ty, dbu, kdb)
+                    ):
+                        continue
+                    side_off = 0.5 * L + max(0.03, 0.08 * L + d_in * tan_side_tol)
+                    if (
+                        _local_poly_contains_point_um(loc_polys, cx + side_off * tx, cy + side_off * ty, dbu, kdb)
+                        or _local_poly_contains_point_um(loc_polys, cx - side_off * tx, cy - side_off * ty, dbu, kdb)
+                    ):
+                        continue
+                else:
+                    if not _poly_contains_point_um(poly, p_in_x, p_in_y, dbu, kdb):
+                        continue
+                    # Verify local waveguide strip width inward (rejects notches/staircases)
+                    d_in = max(eps, min(0.10, 0.8 * min(L1, L2)))
+                    cx = mx - d_in * nx
+                    cy = my - d_in * ny
+                    if not _poly_contains_point_um(poly, cx, cy, dbu, kdb):
+                        continue
+                    inner_half = 0.30 * L
+                    if not (
+                        _poly_contains_point_um(poly, cx + inner_half * tx, cy + inner_half * ty, dbu, kdb)
+                        and _poly_contains_point_um(poly, cx - inner_half * tx, cy - inner_half * ty, dbu, kdb)
+                    ):
+                        continue
+                    side_off = 0.5 * L + max(0.03, 0.08 * L + d_in * tan_side_tol)
+                    if (
+                        _poly_contains_point_um(poly, cx + side_off * tx, cy + side_off * ty, dbu, kdb)
+                        or _poly_contains_point_um(poly, cx - side_off * tx, cy - side_off * ty, dbu, kdb)
+                    ):
+                        continue
 
                 angle_deg = _normalize_angle_deg(math.degrees(math.atan2(ny, nx)))
                 candidates.append(
